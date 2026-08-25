@@ -40,3 +40,7 @@
 {"ts": 1787647885.7223961, "iso": "2026-08-25T08:51:25", "step": "2_restore_snapshot", "region": "b", "rpo_seconds": 149.2, "docs_lost": 72, "embed_model_version": "test", "snapshot_meta": {"snapshot_at": 1787647885.6947377, "latest_doc_ts": 1787647885.694738, "embed_model_version": "test"}}
 {"ts": 1787647885.7308795, "iso": "2026-08-25T08:51:25", "step": "3_scale_pool", "region": "b", "pool_state": "full"}
 {"ts": 1787647886.7352192, "iso": "2026-08-25T08:51:26", "step": "4_wait_ready", "region": "b", "ok": false, "waited_s": 1.0}
+{"ts": 1787650181.2146773, "iso": "2026-08-25T09:29:41", "step": "1_verify_target", "region": "b", "state": {"region": "b", "pool_state": "warm"}}
+{"ts": 1787650181.2363021, "iso": "2026-08-25T09:29:41", "step": "2_restore_snapshot", "region": "b", "rpo_seconds": 149.2, "docs_lost": 72, "embed_model_version": "test", "snapshot_meta": {"snapshot_at": 1787650181.2160947, "latest_doc_ts": 1787650181.2160947, "embed_model_version": "test"}}
+{"ts": 1787650181.2510583, "iso": "2026-08-25T09:29:41", "step": "3_scale_pool", "region": "b", "pool_state": "full"}
+{"ts": 1787650182.2535694, "iso": "2026-08-25T09:29:42", "step": "4_wait_ready", "region": "b", "ok": false, "waited_s": 1.0}

@@ -32,14 +32,7 @@ Drill này không nhằm mục đích xem kết quả đạt được thành cô
 | RTO — Inference API | `20.3s`               | 300s (5 phút)         | PASS    |
 | RPO — Vector DB     | `27.01s` / `13` doc | 300s (5 phút)         | PASS    |
 
-Snapshot restore xong ở giây 8.4, sớm hơn lúc health check phát hiện ở giây 14.3, vì failover
-được `dr/runbook.py` tự kích hoạt ở giây 8.1 chứ không chờ health check. Automation làm xong
-việc ở giây 15.1 khi DNS cutover, nhưng khách phải tới giây 20.3 mới dùng lại được, vì edge
-proxy còn cache region cũ thêm 5 giây theo `EDGE_TTL_SECONDS`. RTO tính theo lúc khách dùng
-được, không tính theo lúc automation báo xong. RPO 27.01 giây tương đương 13 doc là phần dữ
-liệu nhập vào region A sau lần replicate cuối, bản restore ở region B không có. Chu kỳ
-replicate là 30 giây nên RPO luôn bị chặn quanh mức đó, không phụ thuộc outage dài bao lâu.
-Số tổng hợp ở `reports/measure-drill-2.json`.
+Snapshot restore xong ở giây 8.4, trước khi health check phát hiện ở giây 14.3, vì `dr/runbook.py` đã tự kích hoạt failover từ giây 8.1. Automation hoàn tất ở giây 15.1 khi DNS cutover, nhưng khách phải chờ đến giây 20.3 mới dùng lại được vì edge proxy vẫn cache region cũ thêm khoảng 5 giây theo `EDGE_TTL_SECONDS`. RTO tính từ lúc khách dùng lại được, không phải lúc automation báo xong. RPO 27.01 giây, tương đương 13 doc, là phần dữ liệu được ghi vào region A sau lần replicate cuối nhưng chưa có ở region B. Chu kỳ replicate là 30 giây nên lượng dữ liệu có thể mất bị giới hạn quanh mức này, không phụ thuộc outage kéo dài bao lâu. Số tổng hợp nằm ở `reports/measure-drill-2.json`.
 
 ## 3. RTO của tôi gồm những gì (bắt buộc — đây là phần chấm điểm hiểu bài)
 
@@ -50,15 +43,6 @@ Số tổng hợp ở `reports/measure-drill-2.json`.
 | GPU pool warm-up          | 6.7   | `waited_s` ở `4_wait_ready`, `reports/failover-events.jsonl:13` | Giữ region phụ ấm sẵn, đổi lại tốn tiền GPU 24/7                              |
 | DNS/LB TTL cache          | 5.2   | t_recovered − t_cutover,`reports/drill-2-withdr.jsonl:35`           | Giảm`EDGE_TTL_SECONDS`, đổi lại mỗi request phải đọc lại file định tuyến |
 
-Bốn thành phần trên cộng lại không ra 20.3 giây, và đó là điểm đáng nói nhất của lần chạy này.
-Con số 15.0 giây chỉ là sàn lý thuyết của health check, nó không nằm trên đường đi thật. Hệ
-thống có hai đường phát hiện chạy song song: health check thăm dò 5 giây một lần và cần 3 lần
-hỏng liên tiếp nên nhanh nhất là 15 giây, thực tế báo ở giây 14.3; còn `dr/runbook.py` tự thăm
-dò 3 phát liên tục ngay khi được gọi nên báo ở giây 8.1. Đường thứ hai nhanh hơn và chính nó
-kích hoạt failover.
+Bốn thành phần trên không cộng trực tiếp thành 20.3 giây, vì 15.0 giây của health check chỉ là thời gian lý thuyết. Thực tế có hai đường phát hiện chạy song song: health check kiểm tra mỗi 5 giây và cần 3 lần lỗi liên tiếp, nên nhanh nhất là khoảng 15 giây và lần này báo ở giây 14.3. Trong khi đó, `dr/runbook.py` tự thăm dò 3 lần ngay khi được gọi và phát hiện ở giây 8.1. Chính đường này đã kích hoạt failover.
 
-Đường đi thật là 8.1 giây runbook xác nhận, cộng 0.2 giây restore snapshot, cộng 6.7 giây nạp
-model lên GPU, ra 15.1 giây là lúc DNS cutover, rồi cộng thêm 5.2 giây chờ hết hạn cache, tổng
-đúng 20.3 giây. Hệ quả thực tế là hạ interval của health check xuống 1 giây sẽ không làm RTO
-nhanh hơn giây nào, vì đó không phải chỗ nghẽn. Chỗ nghẽn thật là 3 lần thăm dò nhân 2 giây
-timeout trong `dr/runbook.py`, và 6.7 giây nạp model ở region B.
+Đường đi thực tế là 8.1 giây runbook xác nhận, 0.2 giây restore snapshot, 6.7 giây nạp model lên GPU, đến 15.1 giây thì DNS cutover. Sau đó edge cache mất thêm 5.2 giây, nên request đầu tiên thành công ở 20.3 giây. Vì vậy, hạ interval của health check xuống 1 giây sẽ không làm RTO của lần chạy này nhanh hơn. Hai chỗ đang tốn thời gian thực sự là ba lần thăm dò với timeout 2 giây trong `dr/runbook.py` và 6.7 giây warm-up ở region B.

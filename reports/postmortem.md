@@ -25,18 +25,11 @@ Mục tiêu 300s hiện khá rộng so với thời gian thực tế của hệ 
 
 Vấn đề ở đây không phải là chaos script đã được chạy như thế nào mà là nếu đây là một outage thật thì quy trình failover hiện tại sẽ phản ứng ra sao và điểm nào trong runbook đang làm chậm quá trình.
 
-1. Vì sao user thấy lỗi? Region A ngừng trả lời do `SIGSTOP`, mà edge proxy vẫn route sang A
-   vì file `edge/active_region` chưa đổi.
-2. Vì sao edge không tự né A? Vì nó là load balancer thụ động, chỉ đọc file cấu hình rồi
-   chuyển tiếp. Phát hiện outage là việc của health checker, tách lớp như vậy là đúng thiết kế.
-3. Vì sao mất 8.1 giây mới gọi được failover? Vì `dr/runbook.py` bước 1 thăm dò tuần tự 3 lần,
-   mỗi lần timeout 2 giây, và không kết luận sớm dù hai lần đầu đã đủ rõ.
-4. Vì sao mất thêm 6.7 giây sau khi failover bắt đầu? Vì region B khởi động ở `pool_state=warm`,
-   khi chuyển sang `full` phải chờ đủ `WARMUP_SECONDS=6` để mô phỏng chi phí nạp model lên GPU.
-5. Root cause thật sự: không có bug. Mọi giây trong 20.3 giây đều là chi phí cố ý của kiến trúc
-   bán tự động, thăm dò tuần tự để tránh kết luận nhầm và giữ region phụ ấm thay vì bật full
-   24/7 để khỏi đốt tiền GPU. Nếu mục tiêu RTO siết còn 30 giây thì bước 3 và bước 4 ở trên là
-   hai chỗ phải thiết kế lại đầu tiên, chúng là trade-off chưa tối ưu chứ không phải lỗi.
+1. Vì sao user thấy lỗi? Region A ngừng trả lời do `SIGSTOP`, trong khi edge proxy vẫn route sang A vì file `edge/active_region` chưa đổi.
+2. Vì sao edge không tự né A? Vì đây là load balancer thụ động, chỉ đọc file cấu hình rồi chuyển tiếp. Việc phát hiện outage do health checker đảm nhiệm; tách hai phần này là đúng với thiết kế hiện tại.
+3. Vì sao mất 8.1 giây mới gọi được failover? Vì `dr/runbook.py` ở bước 1 thăm dò tuần tự 3 lần, mỗi lần timeout 2 giây, thay vì kết luận sớm khi đã có đủ tín hiệu.
+4. Vì sao mất thêm 6.7 giây sau khi failover bắt đầu? Vì region B đang ở `pool_state=warm`. Khi chuyển sang `full`, hệ thống phải chờ `WARMUP_SECONDS=6` để mô phỏng thời gian nạp model lên GPU.
+5. Root cause: không có một bug cụ thể. 20.3 giây là tổng thời gian của các lựa chọn thiết kế hiện tại: runbook thăm dò tuần tự để giảm khả năng kết luận nhầm, còn region phụ được giữ ở trạng thái warm thay vì chạy full 24/7 để tiết kiệm GPU. Đây là các trade-off về độ an toàn và chi phí. Nếu RTO được siết xuống 30 giây, hai phần nên ưu tiên xem lại là thời gian thăm dò và thời gian warm-up của region B.
 
 ## 4. Action items (có owner + deadline)
 
@@ -47,37 +40,22 @@ Vấn đề ở đây không phải là chaos script đã được chạy như t
 | 3 | Giảm`EDGE_TTL_SECONDS` từ 5s xuống 2s cho route `/v1/infer`                | infra team    | 2026-09-05 | RTO ~-3s                       |
 | 4 | Tăng tần suất`state/replicate.py` từ 30s xuống 10s                         | data team     | 2026-09-10 | RPO -17s, RTO không đổi     |
 
-Item 4 chỉ cải thiện RPO chứ không giúp RTO nhanh hơn giây nào. Replicate dày hơn làm mất ít
-dữ liệu hơn, không làm hệ thống sống lại sớm hơn. Hai trục độc lập nhau.
+Action item 4 chỉ giúp giảm RPO, không làm RTO nhanh hơn. Replicate thường xuyên hơn thì lượng dữ liệu chưa kịp đồng bộ sẽ ít hơn, nhưng thời gian phát hiện outage và chuyển sang region B vẫn giữ nguyên. Hai chỉ số này cần được xem riêng.
 
 ## 5. Ba câu hỏi bắt buộc trả lời
 
 1. `interval × threshold` của bạn là bao nhiêu giây? Nó chiếm bao nhiêu % RTO?
 
-`5.0 × 3 = 15.0s` theo cấu hình ghi ở `reports/health-events.jsonl:3`. So với RTO 20.3 giây thì
-chiếm khoảng 74%. Nhưng con số 74% đó gây hiểu nhầm, vì lần chạy này health check không phải
-đường kích hoạt failover. Runbook đã tự phát hiện và khởi động ở giây 8.1, sớm hơn lúc health
-check gắn cờ ở giây 14.3. Nên 15.0 giây là sàn lý thuyết của cấu hình, không phải chi phí thật
-đã tiêu trên đường đi.
+`5.0 × 3 = 15.0s` theo cấu hình tại `reports/health-events.jsonl:3`. So với RTO 20.3 giây thì con số này tương đương khoảng 74%. Tuy nhiên, 74% không phải thời gian thực tế đã mất trong lần drill này. Health check chỉ báo ở giây 14.3, trong khi runbook đã tự phát hiện outage và bắt đầu failover từ giây 8.1. Vì vậy, 15.0 giây là sàn lý thuyết của health check, không phải chi phí trên đường failover thực tế.
 
 2. Nếu hạ interval xuống 1s, RTO giảm mấy giây — và bạn trả giá gì (§4 flapping)?
 
-Sàn lý thuyết giảm còn `1 × 3 = 3s`, nhưng RTO đo được sẽ không giảm giây nào vì health check
-không nằm trên đường quyết định. Muốn nhanh thật thì phải sửa ba lần thăm dò nhân 2 giây
-timeout trong `dr/runbook.py`, đúng như action item 1. Giá phải trả nếu vẫn hạ interval xuống
-1 giây: thăm dò dày gấp 5 lần làm tăng tải lên `/readyz` của cả hai region, và dễ flap hơn vì
-khi region chỉ chậm nhất thời thì ba lần thăm dò cách nhau 1 giây rất dễ rơi trọn vào khoảng
-chậm đó và chạm threshold, trong khi cách nhau 5 giây thường vượt qua được.
+Về lý thuyết, sàn phát hiện sẽ giảm từ `5 × 3 = 15s` xuống `1 × 3 = 3s`. Nhưng với lần drill này, RTO thực tế sẽ không giảm vì health check không phải cơ chế kích hoạt failover. Muốn giảm thời gian thật, cần sửa ba lần thăm dò với timeout 2 giây trong `dr/runbook.py`, như action item 1.
 
-3. Nếu outage kéo dài 6 giờ và region chính mất dữ liệu vĩnh viễn, `docs_lost` của bạn có nghĩa
-   gì với khách hàng?
+Nếu vẫn hạ interval xuống 1 giây, `/readyz` của cả hai region sẽ bị kiểm tra thường xuyên hơn, làm tăng tải và tăng nguy cơ flapping. Khi region chỉ chậm trong vài giây, ba lần kiểm tra cách nhau 1 giây có thể đều rơi vào đúng khoảng chậm và chạm threshold. Với interval 5 giây, khả năng này thấp hơn.
 
-`docs_lost=13` ở đây là 13 tài liệu khách tạo trong 27.01 giây sau lần replicate cuối, bản
-restore ở region B không hề biết chúng tồn tại. Với khách hàng đó là 13 lần bấm gửi, màn hình
-báo đã lưu, rồi mất trắng, phải nhập lại từ đầu. Về nguyên tắc RPO chỉ phụ thuộc chu kỳ
-replicate, 30 giây ở đây, chứ không phụ thuộc outage dài bao lâu, vì phần mất luôn là phần nằm
-giữa lần replicate cuối và lúc region chính chết. Điều mà mất vĩnh viễn thay đổi là bình thường
-region A sống lại thì 13 tài liệu đó vẫn còn trên đĩa và đối chiếu gộp lại được, còn nếu A mất
-hẳn thì snapshot cuối là thứ duy nhất còn lại, 13 tài liệu đó không cách nào lấy lại. Đây là lý
-do chu kỳ backup phải khớp khẩu vị rủi ro của bên kinh doanh, không phải con số kỹ thuật chọn
-tuỳ ý.
+3. Nếu outage kéo dài 6 giờ và region chính mất dữ liệu vĩnh viễn, `docs_lost` của bạn có nghĩa gì với khách hàng?
+
+`docs_lost=13` nghĩa là có 13 tài liệu được tạo trong 27.01 giây sau lần replicate cuối nhưng chưa được đồng bộ sang region B. Với khách hàng, đây là 13 lần gửi mà hệ thống có thể đã báo lưu thành công nhưng sau failover dữ liệu không còn, buộc họ phải nhập lại.
+
+RPO phụ thuộc vào chu kỳ replicate, ở đây là 30 giây, chứ không phụ thuộc trực tiếp vào việc outage kéo dài bao lâu. Nếu region A chỉ tạm thời mất kết nối rồi hoạt động lại, 13 tài liệu vẫn có thể còn trên đĩa ở A và được đối chiếu sau đó. Nhưng nếu A mất hoàn toàn thì snapshot cuối ở B là bản dữ liệu duy nhất còn lại, và 13 tài liệu chưa replicate sẽ không thể khôi phục. Vì vậy, chu kỳ backup/replicate nên được chọn theo mức mất dữ liệu mà business chấp nhận được.
