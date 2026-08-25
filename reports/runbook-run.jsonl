@@ -1,0 +1,12 @@
+{"ts": 1787632295.065191, "iso": "2026-08-25T04:31:35", "step": 1, "name": "xac_nhan_outage", "region": "a", "probes": [{"ready": false, "reason": "ReadTimeout"}, {"ready": false, "reason": "ReadTimeout"}, {"ready": false, "reason": "ReadTimeout"}], "confirmed": true}
+{"ts": 1787632295.0713892, "iso": "2026-08-25T04:31:35", "step": 2, "name": "thong_bao_incident", "t_outage": 1787632287.2403538, "t_operator": 1787632295.0711114, "delay_s": 7.83}
+{"ts": 1787632295.721089, "iso": "2026-08-25T04:31:35", "step": 3, "name": "scale_gpu_pool", "target": "b", "ok": true, "pool_state": "full"}
+{"ts": 1787632295.723571, "iso": "2026-08-25T04:31:35", "step": 4, "name": "verify_state_replica", "target": "b", "rpo_seconds": 26.0, "docs_lost": 13, "vectors": {"count": 201, "latest_doc_ts": 1787632269.1839392}, "weights": null}
+{"ts": 1787632295.734042, "iso": "2026-08-25T04:31:35", "step": 5, "name": "dns_cutover", "target": "b", "ok": true}
+{"ts": 1787632408.460618, "iso": "2026-08-25T04:33:28", "step": 1, "name": "xac_nhan_outage", "region": "a", "probes": [{"ready": false, "reason": "ReadTimeout"}, {"ready": false, "reason": "ReadTimeout"}, {"ready": false, "reason": "ReadTimeout"}], "confirmed": true}
+{"ts": 1787632408.4664934, "iso": "2026-08-25T04:33:28", "step": 2, "name": "thong_bao_incident", "t_outage": 1787632400.3460102, "t_operator": 1787632408.4661794, "delay_s": 8.12}
+{"ts": 1787632415.4868734, "iso": "2026-08-25T04:33:35", "step": 3, "name": "scale_gpu_pool", "target": "b", "ok": true, "pool_state": "full"}
+{"ts": 1787632415.488484, "iso": "2026-08-25T04:33:35", "step": 4, "name": "verify_state_replica", "target": "b", "rpo_seconds": 27.01, "docs_lost": 13, "vectors": {"count": 216, "latest_doc_ts": 1787632381.2844248}, "weights": null}
+{"ts": 1787632415.5014727, "iso": "2026-08-25T04:33:35", "step": 5, "name": "dns_cutover", "target": "b", "ok": true}
+{"ts": 1787632421.8633025, "iso": "2026-08-25T04:33:41", "step": 6, "name": "verify_golden_signals", "request_count": 10, "p95_ms": 2088.0, "error_rate": 0.2}
+{"ts": 1787632421.8646352, "iso": "2026-08-25T04:33:41", "step": 7, "name": "post_incident", "elapsed_s": 21.0, "measure_cmd": "python tools/measure_rto.py --loadgen reports/drill-2-withdr.jsonl --target-rto 300"}

@@ -33,24 +33,97 @@ import httpx
 
 sys.path.insert(0, ".")
 from dr import failover as fo  # noqa: E402
+from dr import health_checker as hc  # noqa: E402
 
 LOG = pathlib.Path("reports/runbook-run.jsonl")
 URL = {"a": "http://127.0.0.1:8001", "b": "http://127.0.0.1:8002"}
 
 
 def step(n, name, **kw):
-    """TODO: ghi 1 dòng {ts, iso, step, name, ...} vào LOG."""
-    raise NotImplementedError
+    """Ghi 1 dòng {ts, iso, step, name, ...} vào LOG."""
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"ts": time.time(), "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+           "step": n, "name": name, **kw}
+    with LOG.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+    print("RUNBOOK", json.dumps(rec))
+    return rec
 
 
 def confirm(auto: bool, msg: str) -> bool:
-    """TODO: auto=True -> True; ngược lại hỏi y/N. Đừng bỏ hàm này đi."""
-    raise NotImplementedError
+    """auto=True -> True; ngược lại hỏi y/N."""
+    if auto:
+        return True
+    ans = input(f"{msg} [y/N] ").strip().lower()
+    return ans in ("y", "yes")
 
 
 def run(primary: str, target: str, backend: str, auto: bool) -> dict:
-    """TODO: 7 bước ở trên."""
-    raise NotImplementedError
+    """7 bước runbook §4 'Region Chính Down'."""
+    t_start = time.time()
+
+    # 1 xac_nhan_outage — nhiều lần probe, không tin 1 lần fail
+    probes = []
+    for _ in range(3):
+        ready, reason = hc.probe(primary, timeout=2.0)
+        probes.append({"ready": ready, "reason": reason})
+        time.sleep(0.2)
+    confirmed = all(not p["ready"] for p in probes)
+    step(1, "xac_nhan_outage", region=primary, probes=probes, confirmed=confirmed)
+
+    # 2 thong_bao_incident — ts cua buoc nay LUON SAU t_outage
+    chaos_events = []
+    chaos_path = pathlib.Path("chaos/chaos-events.jsonl")
+    if chaos_path.exists():
+        chaos_events = [json.loads(l) for l in chaos_path.read_text().splitlines() if l.strip()]
+    kills = [e for e in chaos_events if e.get("action") == "kill" and e.get("region") == primary]
+    t_outage = kills[-1]["ts"] if kills else None
+    t_operator = time.time()
+    step(2, "thong_bao_incident", t_outage=t_outage, t_operator=t_operator,
+         delay_s=None if t_outage is None else round(t_operator - t_outage, 2))
+
+    if not confirm(auto, f"Xac nhan failover {primary} -> {target}?"):
+        step(2, "aborted_by_operator", region=primary, target=target)
+        return {"ok": False, "reason": "operator_declined"}
+
+    # 3 scale_gpu_pool — goi failover.failover(...) DUNG 1 LAN
+    r = fo.failover(target, backend, wait=60)
+    step(3, "scale_gpu_pool", target=target, ok=r["ok"], pool_state=r.get("pool_state"))
+
+    # 4 verify_state_replica — chi doc lai ket qua buoc 3, khong goi lai failover
+    final_state = r["wait_ready"]["final_state"]
+    step(4, "verify_state_replica", target=target,
+         rpo_seconds=r["restore"]["rpo_seconds"], docs_lost=r["restore"]["docs_lost"],
+         vectors=(final_state or {}).get("vectors"),
+         weights=(final_state or {}).get("weights") if final_state else None)
+
+    # 5 dns_cutover — chi doc lai
+    step(5, "dns_cutover", target=target, ok=r["cutover"]["ok"])
+
+    # 6 verify_golden_signals — 10 request that qua edge
+    latencies, errors = [], 0
+    with httpx.Client(timeout=5.0) as c:
+        for i in range(10):
+            t0 = time.time()
+            try:
+                resp = c.get("http://127.0.0.1:8080/v1/infer", params={"q": f"check {i}"})
+                latencies.append((time.time() - t0) * 1000)
+                if resp.status_code != 200:
+                    errors += 1
+            except Exception:
+                latencies.append((time.time() - t0) * 1000)
+                errors += 1
+    latencies.sort()
+    p95 = latencies[int(len(latencies) * 0.95) - 1] if latencies else None
+    step(6, "verify_golden_signals", request_count=len(latencies),
+         p95_ms=None if p95 is None else round(p95, 1), error_rate=errors / max(1, len(latencies)))
+
+    # 7 post_incident
+    elapsed_s = round(time.time() - t_start, 2)
+    step(7, "post_incident", elapsed_s=elapsed_s,
+         measure_cmd="python tools/measure_rto.py --loadgen reports/drill-2-withdr.jsonl --target-rto 300")
+
+    return {"ok": r["ok"], "failover": r, "elapsed_s": elapsed_s}
 
 
 if __name__ == "__main__":

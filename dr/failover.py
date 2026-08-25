@@ -32,16 +32,94 @@ from state import snapshot  # noqa: E402
 
 URL = {"a": "http://127.0.0.1:8001", "b": "http://127.0.0.1:8002"}
 LOG = pathlib.Path("reports/failover-events.jsonl")
+ACTIVE_FILE = pathlib.Path("edge/active_region")
+POLL_INTERVAL = 0.5
 
 
 def emit(**kw):
-    """TODO: append 1 dòng JSONL có ts + iso vào LOG, và print ra stdout."""
-    raise NotImplementedError
+    """Append 1 dòng JSONL có ts + iso vào LOG, và print ra stdout."""
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"ts": time.time(), "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), **kw}
+    with LOG.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+    print("FAILOVER", json.dumps(rec))
+    return rec
+
+
+def other(region: str) -> str:
+    return "b" if region == "a" else "a"
+
+
+def state_of(region: str) -> dict:
+    """Đọc /v1/state của region — bọc try/except vì bước 1 không được phép
+    crash nếu region đích tạm thời không phản hồi được."""
+    try:
+        r = httpx.get(f"{URL[region]}/v1/state", timeout=2.0)
+        return r.json()
+    except Exception as e:
+        return {"region": region, "error": type(e).__name__}
 
 
 def failover(target: str, backend: str, wait: float) -> dict:
-    """TODO: 5 bước ở trên, đúng thứ tự."""
-    raise NotImplementedError
+    """5 bước, đúng thứ tự: verify_target -> restore_snapshot -> scale_pool ->
+    wait_ready -> dns_cutover. Không cutover nếu bước 4 timeout."""
+    primary = other(target)
+
+    # 1_verify_target
+    before = state_of(target)
+    emit(step="1_verify_target", region=target, state=before)
+
+    # 2_restore_snapshot
+    meta = snapshot.get(target, backend)
+    primary_db = pathlib.Path(f"state/region-{primary}/vectors.sqlite")
+    restored_db = pathlib.Path(f"state/region-{target}/vectors.sqlite")
+    rpo = snapshot.rpo(primary_db, restored_db)
+    emit(step="2_restore_snapshot", region=target,
+         rpo_seconds=rpo["rpo_seconds"], docs_lost=rpo["docs_lost"],
+         embed_model_version=meta.get("embed_model_version"), snapshot_meta=meta)
+
+    # 3_scale_pool
+    pool_file = pathlib.Path(f"state/region-{target}/pool_state")
+    pool_file.parent.mkdir(parents=True, exist_ok=True)
+    pool_file.write_text("full")
+    emit(step="3_scale_pool", region=target, pool_state="full")
+
+    # 4_wait_ready
+    t_wait_start = time.time()
+    deadline = t_wait_start + wait
+    ready_body = None
+    while time.time() < deadline:
+        try:
+            r = httpx.get(f"{URL[target]}/readyz", timeout=2.0)
+            if r.status_code == 200:
+                ready_body = r.json()
+                break
+        except Exception:
+            pass
+        time.sleep(POLL_INTERVAL)
+    waited_s = round(time.time() - t_wait_start, 2)
+    ok_ready = ready_body is not None
+    emit(step="4_wait_ready", region=target, ok=ok_ready, waited_s=waited_s)
+
+    if not ok_ready:
+        return {"ok": False, "target": target, "primary": primary, "backend": backend,
+                "verify_target": before,
+                "restore": {"rpo_seconds": rpo["rpo_seconds"], "docs_lost": rpo["docs_lost"],
+                            "embed_model_version": meta.get("embed_model_version"), "meta": meta},
+                "pool_state": "full", "wait_ready": {"ok": False, "waited_s": waited_s, "final_state": None},
+                "cutover": {"ok": False}}
+
+    # 5_dns_cutover — chỉ tới đây khi target đã thực sự ready
+    ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ACTIVE_FILE.write_text(target)
+    emit(step="5_dns_cutover", region=target, active_region=target)
+
+    return {"ok": True, "target": target, "primary": primary, "backend": backend,
+            "verify_target": before,
+            "restore": {"rpo_seconds": rpo["rpo_seconds"], "docs_lost": rpo["docs_lost"],
+                        "embed_model_version": meta.get("embed_model_version"), "meta": meta},
+            "pool_state": "full", "wait_ready": {"ok": True, "waited_s": waited_s, "final_state": ready_body},
+            "cutover": {"ok": True}}
 
 
 if __name__ == "__main__":
